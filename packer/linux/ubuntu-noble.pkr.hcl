@@ -44,7 +44,7 @@ variable "systemd_restart_seconds" {
 packer {
   required_plugins {
     amazon = {
-      version = ">= 1.3.8"
+      version = "~> 1"
       source  = "github.com/hashicorp/amazon"
     }
   }
