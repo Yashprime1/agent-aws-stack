@@ -2,6 +2,9 @@
 - name: Run apt update
   ansible.builtin.command: apt -y update
 
+- name: Hold kernel packages
+  ansible.builtin.shell: apt-mark hold 'linux-*'
+
 - name: Run apt dist-upgrade
   ansible.builtin.command: apt -fuy -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" dist-upgrade
   environment:
