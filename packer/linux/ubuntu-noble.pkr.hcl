@@ -71,7 +71,7 @@ source "amazon-ebs" "ubuntu" {
     owners = ["099720109477"]
 
     filters = {
-      name                = "ubuntu/images/*ubuntu-noble-24.04-*"
+      name                = "ubuntu/images/*ubuntu-noble-24.04-amd64-server-20250627"
       architecture        = "${var.arch}"
       root-device-type    = "ebs"
       virtualization-type = "hvm"
