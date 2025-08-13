@@ -64,19 +64,7 @@ source "amazon-ebs" "ubuntu" {
     Hash = "${var.hash}"
   }
 
-  source_ami_filter {
-    most_recent = true
-
-    // Canonical's ownerId: https://ubuntu.com/server/docs/cloud-images/amazon-ec2
-    owners = ["099720109477"]
-
-    filters = {
-      name                = "ubuntu/images/*ubuntu-noble-24.04-amd64-server-20250627"
-      architecture        = "${var.arch}"
-      root-device-type    = "ebs"
-      virtualization-type = "hvm"
-    }
-  }
+  source_ami = "ami-0416cbe3c21834f41"
 }
 
 build {
