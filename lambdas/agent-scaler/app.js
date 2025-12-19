@@ -2,12 +2,15 @@ const https = require('https');
 const utils = require("util");
 const { Agent } = require("https");
 const { SSMClient, GetParameterCommand } = require("@aws-sdk/client-ssm");
-const { AutoScalingClient, DescribeAutoScalingGroupsCommand, SetDesiredCapacityCommand } = require("@aws-sdk/client-auto-scaling");
+const { AutoScalingClient, DescribeAutoScalingGroupsCommand, SetDesiredCapacityCommand, TerminateInstanceInAutoScalingGroupCommand } = require("@aws-sdk/client-auto-scaling");
+const { EC2Client, DescribeInstancesCommand } = require("@aws-sdk/client-ec2");
 const { CloudWatchClient, PutMetricDataCommand } = require("@aws-sdk/client-cloudwatch");
 const { NodeHttpHandler } = require("@aws-sdk/node-http-handler");
 
 const CONNECTION_TIMEOUT = 1000;
 const SOCKET_TIMEOUT = 1000;
+const IDLE_TAG_KEY = 'SemaphoreAgentState';
+const IDLE_TAG_VALUE = 'IDLE';
 
 function getAgentTypeToken(ssmClient, tokenParameterName) {
   const params = {
@@ -58,7 +61,8 @@ function describeAsg(autoScalingClient, stackName) {
             name: asg.AutoScalingGroupName,
             desiredCapacity: asg.DesiredCapacity,
             maxSize: asg.MaxSize,
-            minSize: asg.MinSize
+            minSize: asg.MinSize,
+            instances: asg.Instances || []
           });
         }
       }
@@ -223,6 +227,74 @@ const scaleUpIfNeeded = async (autoScalingClient, asgName, occupancy, asg, overp
   }
 }
 
+function chunk(array, size) {
+  const result = [];
+  for (let i = 0; i < array.length; i += size) {
+    result.push(array.slice(i, i + size));
+  }
+  return result;
+}
+
+async function describeInstances(ec2Client, instanceIds) {
+  if (instanceIds.length === 0) {
+    return [];
+  }
+
+  const batches = chunk(instanceIds, 200);
+  const instances = [];
+
+  for (const batch of batches) {
+    const command = new DescribeInstancesCommand({ InstanceIds: batch });
+    // eslint-disable-next-line no-await-in-loop
+    const response = await ec2Client.send(command);
+    response.Reservations.forEach(reservation => {
+      reservation.Instances.forEach(instance => instances.push(instance));
+    });
+  }
+
+  return instances;
+}
+
+const scaleDownIfIdle = async (autoScalingClient, ec2Client, asgName, asg) => {
+  if (asg.desiredCapacity <= asg.minSize) {
+    console.log(`ASG '${asgName}' already at min size (${asg.minSize}).`);
+    return;
+  }
+
+  const inService = (asg.instances || []).filter(instance => instance.LifecycleState === 'InService');
+  const unprotected = inService.filter(instance => !instance.ProtectedFromScaleIn);
+
+  if (unprotected.length === 0) {
+    console.log(`No unprotected instances found for '${asgName}'.`);
+    return;
+  }
+
+  const instanceDetails = await describeInstances(ec2Client, unprotected.map(instance => instance.InstanceId));
+  const idleInstances = instanceDetails.filter(instance => {
+    const tags = instance.Tags || [];
+    return tags.some(tag => tag.Key === IDLE_TAG_KEY && tag.Value === IDLE_TAG_VALUE);
+  });
+
+  if (idleInstances.length === 0) {
+    console.log(`No idle instances tagged '${IDLE_TAG_KEY}=${IDLE_TAG_VALUE}' found for '${asgName}'.`);
+    return;
+  }
+
+  const allowedTerminations = asg.desiredCapacity - asg.minSize;
+  const targets = idleInstances.slice(0, allowedTerminations);
+
+  for (const instance of targets) {
+    const command = new TerminateInstanceInAutoScalingGroupCommand({
+      InstanceId: instance.InstanceId,
+      ShouldDecrementDesiredCapacity: true
+    });
+
+    // eslint-disable-next-line no-await-in-loop
+    await autoScalingClient.send(command);
+    console.log(`Terminated idle instance '${instance.InstanceId}' and decremented desired capacity.`);
+  }
+}
+
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -231,12 +303,13 @@ function epochSeconds() {
   return Math.round(Date.now() / 1000);
 }
 
-const tick = async (agentTypeToken, stackName, autoScalingClient, cloudwatchClient, semaphoreEndpoint, overprovisionStrategy, overprovisionFactor) => {
+const tick = async (agentTypeToken, stackName, autoScalingClient, ec2Client, cloudwatchClient, semaphoreEndpoint, overprovisionStrategy, overprovisionFactor) => {
   try {
     const metrics = await getAgentTypeMetrics(agentTypeToken, semaphoreEndpoint);
     await publishOccupancyMetrics(cloudwatchClient, stackName, metrics);
     const asg = await describeAsg(autoScalingClient, stackName);
     await scaleUpIfNeeded(autoScalingClient, asg.name, metrics.jobs, asg, overprovisionStrategy, overprovisionFactor);
+    await scaleDownIfIdle(autoScalingClient, ec2Client, asg.name, asg);
   } catch (e) {
     console.error("Error fetching occupancy", e);
   }
@@ -318,6 +391,17 @@ exports.handler = async (event, context, callback) => {
     }),
   });
 
+  const ec2Client = new EC2Client({
+    maxAttempts: 1,
+    requestHandler: new NodeHttpHandler({
+      connectionTimeout: CONNECTION_TIMEOUT,
+      socketTimeout: SOCKET_TIMEOUT,
+      httpsAgent: new Agent({
+        timeout: SOCKET_TIMEOUT
+      })
+    }),
+  });
+
   /**
    * The interval between ticks.
    * This is required because the smallest unit for a scheduled lambda is 1 minute.
@@ -332,7 +416,7 @@ exports.handler = async (event, context, callback) => {
     const agentTypeToken = await getAgentTypeToken(ssmClient, agentTokenParameterName);
 
     while (true) {
-      await tick(agentTypeToken, stackName, autoScalingClient, cloudwatchClient, semaphoreEndpoint, overprovisionStrategy, overprovisionFactor);
+      await tick(agentTypeToken, stackName, autoScalingClient, ec2Client, cloudwatchClient, semaphoreEndpoint, overprovisionStrategy, overprovisionFactor);
 
       // Check if we will hit the timeout before sleeping.
       // We include a worst-case scenario for the next tick duration (5s) here too,
