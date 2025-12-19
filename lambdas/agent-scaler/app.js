@@ -289,10 +289,20 @@ const scaleDownIfIdle = async (autoScalingClient, ec2Client, asgName, asg) => {
       ShouldDecrementDesiredCapacity: true
     });
 
-    // eslint-disable-next-line no-await-in-loop
     await autoScalingClient.send(command);
-    console.log(`Terminated idle instance '${instance.InstanceId}' and decremented desired capacity.`);
+    console.log(`Terminated idle instance '${instance.InstanceId}' and decremented desired capacity to ${asg.desiredCapacity - 1}.`);
   }
+
+  const nonIdleInstances = inService.filter(instance => !idleInstances.includes(instance));
+  for (const instance of nonIdleInstances) {
+    const command = new TerminateInstanceInAutoScalingGroupCommand({
+      InstanceId: instance.InstanceId,
+      ShouldDecrementDesiredCapacity: false
+    });
+    await autoScalingClient.send(command);
+    console.log(`Terminated non idle instance '${instance.InstanceId}' and did not decrement desired capacity.`);
+  }
+
 }
 
 function sleep(ms) {
