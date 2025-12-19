@@ -12,6 +12,7 @@ fi
 token=$(curl -X PUT -H "X-aws-ec2-metadata-token-ttl-seconds: 60" --fail --silent --show-error --location "http://169.254.169.254/latest/api/token")
 instance_id=$(curl -H "X-aws-ec2-metadata-token: $token" --fail --silent --show-error --location "http://169.254.169.254/latest/meta-data/instance-id")
 region=$(curl -H "X-aws-ec2-metadata-token: $token" --fail --silent --show-error --location "http://169.254.169.254/latest/meta-data/placement/region")
+asg_name=$(curl -s -H "X-aws-ec2-metadata-token: $token" "http://169.254.169.254/latest/meta-data/tags/instance/aws:autoscaling:groupName")
 idle_tag_key="SemaphoreAgentState"
 idle_tag_value="IDLE"
 
@@ -23,21 +24,18 @@ unset AWS_SECRET_ACCESS_KEY
 unset AWS_SESSION_TOKEN
 rm -rf $HOME/.aws/credentials
 
-if [[ $SEMAPHORE_AGENT_SHUTDOWN_REASON == "IDLE" ]]; then
-  aws autoscaling set-instance-protection \
+auto_scaling_group_name=$(curl -H "X-aws-ec2-metadata-token: $token" --fail --silent --show-error --location "http://169.254.169.254/latest/meta-data/autoscaling/groupName")
+aws autoscaling set-instance-protection \
     --region "$region" \
     --instance-ids "$instance_id" \
+    --auto-scaling-group-name "$asg_name" \
     --no-protected-from-scale-in
 
+if [[ $SEMAPHORE_AGENT_SHUTDOWN_REASON == "IDLE" ]]; then
   aws ec2 create-tags \
     --region "$region" \
     --resources "$instance_id" \
     --tags "Key=${idle_tag_key},Value=${idle_tag_value}"
 
   echo "Instance ${instance_id} tagged ${idle_tag_key}=${idle_tag_value} and unprotected from scale-in. Lambda will terminate it."
-else
-  aws autoscaling set-instance-protection \
-    --region "$region" \
-    --instance-ids "$instance_id" \
-    --no-protected-from-scale-in
 fi

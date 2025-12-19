@@ -3,6 +3,7 @@ $InstanceId = (Invoke-WebRequest -UseBasicParsing -Headers @{'X-aws-ec2-metadata
 $Region = (Invoke-WebRequest -UseBasicParsing -Headers @{'X-aws-ec2-metadata-token' = $Token} http://169.254.169.254/latest/meta-data/placement/region).content
 $IdleTagKey = "SemaphoreAgentState"
 $IdleTagValue = "IDLE"
+$AutoScalingGroupName = (Invoke-WebRequest -UseBasicParsing -Headers @{'X-aws-ec2-metadata-token' = $Token} http://169.254.169.254/latest/meta-data/tags/instance/aws:autoscaling:groupName).content
 
 # We unset all AWS related variables to make sure the instance profile is always used.
 # Before, we were using a specific AWS CLI profile that activates the instance profile,
@@ -15,11 +16,13 @@ if (Test-Path "$HOME\.aws\credentials") {
   Remove-Item -Recurse -Force -Path "$HOME\.aws\credentials"
 }
 
-if ($env:SEMAPHORE_AGENT_SHUTDOWN_REASON -eq "IDLE") {
-  aws autoscaling set-instance-protection `
+aws autoscaling set-instance-protection `
     --region "$Region" `
+    --auto-scaling-group-name "$AutoScalingGroupName" `
     --instance-ids "$InstanceId" `
     --no-protected-from-scale-in 2> $null
+
+if ($env:SEMAPHORE_AGENT_SHUTDOWN_REASON -eq "IDLE") {
 
   aws ec2 create-tags `
     --region "$Region" `
@@ -27,9 +30,4 @@ if ($env:SEMAPHORE_AGENT_SHUTDOWN_REASON -eq "IDLE") {
     --tags "Key=$IdleTagKey,Value=$IdleTagValue" 2> $null
 
   Write-Output "Instance $InstanceId tagged $IdleTagKey=$IdleTagValue and unprotected from scale-in. Lambda will terminate it."
-} else {
-  aws autoscaling set-instance-protection `
-    --region "$Region" `
-    --instance-ids "$InstanceId" `
-    --no-protected-from-scale-in 2> $null
 }
