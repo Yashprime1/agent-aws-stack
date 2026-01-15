@@ -21,6 +21,25 @@ unset AWS_SECRET_ACCESS_KEY
 unset AWS_SESSION_TOKEN
 rm -rf $HOME/.aws/credentials
 
+if $(cat /tmp/semaphore_job_completed); then
+  echo "Job completed, terminating instance."
+else
+  echo "Job not completed, sleeping for 1 hour and then terminating instance."
+  slack_token=${SLACK_BOT_TOKEN:-$SLACK_TOKEN}
+  slack_channel=${SLACK_CHANNEL_ID:-C0A9NBF8KQQ}
+  if [[ -n "$slack_token" ]]; then
+    curl -X POST \
+      -H "Authorization: Bearer $slack_token" \
+      -H "Content-Type: application/x-www-form-urlencoded" \
+      --data-urlencode "channel=$slack_channel" \
+      --data-urlencode "text=Semaphore agent on instance $instance_id has an incomplete job; will sleep 1h then terminate." \
+      https://slack.com/api/chat.postMessage
+  else
+    echo "SLACK_BOT_TOKEN/SLACK_TOKEN not set; skipping Slack notification."
+  fi
+  sleep 3600
+fi
+
 if [[ $SEMAPHORE_AGENT_SHUTDOWN_REASON == "IDLE" ]]; then
   aws autoscaling terminate-instance-in-auto-scaling-group \
     --region "$region" \
